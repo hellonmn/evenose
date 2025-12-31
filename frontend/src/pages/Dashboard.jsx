@@ -13,7 +13,7 @@ import {
   Clock,
 } from "lucide-react";
 import { useAuthStore, useTeamStore } from "../store";
-import { teamAPI } from "../services/api";
+import { teamAPI, authAPI } from "../services/api";
 import toast from "react-hot-toast";
 
 export default function StudentDashboard() {
@@ -28,10 +28,21 @@ export default function StudentDashboard() {
     coordinating: 0,
     pendingRequests: 0,
   });
-
+  const [pendingInvitations, setPendingInvitations] = useState(0);
   const isCoordinator = user?.coordinatorFor?.some(
     (c) => c.status === "accepted"
   );
+
+  useEffect(() => {
+  // Fetch user data
+  authAPI.getMe().then(res => {
+    const pending = res.data.user.coordinatorFor?.filter(
+      c => c.status === 'pending'
+    ) || [];
+    setPendingInvitations(pending.length);
+  });
+}, []);
+
 
   useEffect(() => {
     fetchDashboardData();
@@ -241,6 +252,32 @@ export default function StudentDashboard() {
               </div>
             </motion.div>
           )}
+
+          {pendingInvitations > 0 && (
+  <Link 
+    to="/invitations"
+    className="bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-3xl p-6 hover:shadow-lg transition-all"
+  >
+    <div className="flex items-start justify-between mb-4">
+      <div className="w-12 h-12 rounded-xl bg-yellow-100 flex items-center justify-center">
+        <Mail className="w-6 h-6 text-yellow-600" />
+      </div>
+      <div className="text-4xl font-bold text-yellow-900">
+        {pendingInvitations}
+      </div>
+    </div>
+    <h3 className="font-bold text-lg text-yellow-900 mb-1">
+      Pending Invitations
+    </h3>
+    <p className="text-yellow-700 text-sm mb-3">
+      You have coordinator invitations waiting!
+    </p>
+    <div className="flex items-center text-yellow-600 text-sm font-medium">
+      <span>View Invitations</span>
+      <Clock className="w-4 h-4 ml-2" />
+    </div>
+  </Link>
+)}
 
           {/* My Teams */}
           <motion.div

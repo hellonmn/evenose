@@ -19,6 +19,7 @@ import {
 import { useState, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../store';
 import Button from '../ui/Button';
+import InvitationsNotification from '../InvitationsNotification';
 
 export default function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -100,6 +101,11 @@ export default function Navbar() {
                     Dashboard
                   </Button>
                 </Link>
+    <Link to="/hackathons">Hackathons</Link>
+    
+    {/* ADD THIS: Shows notification badge when user has pending invitations */}
+    <InvitationsNotification />
+    
                 
                 <div className="relative" ref={profileMenuRef}>
                   <motion.button

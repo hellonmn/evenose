@@ -291,7 +291,7 @@ exports.inviteCoordinator = async (req, res) => {
       console.log('❌ User not found:', emailOrUsername);
       return res.status(404).json({
         success: false,
-        message: 'User not found'
+        message: 'User not found. Please make sure the user has an account.'
       });
     }
 
@@ -312,40 +312,74 @@ exports.inviteCoordinator = async (req, res) => {
       });
     }
 
-    // Check if already a coordinator
+    // Check if already a coordinator (pending or accepted)
     const existingCoord = user.coordinatorFor.find(
       c => c.hackathon.toString() === hackathon._id.toString()
     );
 
     if (existingCoord) {
-      console.log('❌ User already coordinator');
-      return res.status(400).json({
-        success: false,
-        message: 'User is already a coordinator for this hackathon'
-      });
+      console.log('❌ User already has coordinator entry');
+      
+      if (existingCoord.status === 'accepted') {
+        return res.status(400).json({
+          success: false,
+          message: 'User is already an active coordinator for this hackathon',
+          alreadyInvited: true,
+          status: 'accepted'
+        });
+      } else if (existingCoord.status === 'pending') {
+        return res.status(400).json({
+          success: false,
+          message: 'An invitation has already been sent to this user. Use the "Resend" button to send the email again.',
+          alreadyInvited: true,
+          status: 'pending'
+        });
+      }
     }
 
     // Add to user's coordinatorFor
+    const crypto = require('crypto');
     const token = crypto.randomBytes(32).toString('hex');
+    
     user.coordinatorFor.push({
       hackathon: hackathon._id,
-      permissions: permissions || {},
+      permissions: permissions || {
+        canViewTeams: true,
+        canCheckIn: true,
+        canAssignTables: false,
+        canViewSubmissions: true,
+        canEliminateTeams: false,
+        canCommunicate: true,
+      },
       invitedBy: req.user._id,
       invitedAt: new Date(),
-      status: 'pending'
+      status: 'pending',
+      invitationToken: token
     });
     await user.save();
 
     console.log('✅ Coordinator added to user');
 
     // Send invitation email
-    await emailService.sendCoordinatorInvitation(user, hackathon, req.user, token);
+    try {
+      await emailService.sendCoordinatorInvitation(user, hackathon, req.user, token);
+      console.log('✅ Invitation email sent to:', user.email);
+    } catch (emailError) {
+      console.error('⚠️ Failed to send invitation email:', emailError);
+      // Don't fail the invitation if email fails
+    }
 
-    console.log('✅ Invitation email sent');
+    console.log('✅ Invitation sent successfully');
 
     res.status(200).json({
       success: true,
-      message: 'Coordinator invitation sent successfully'
+      message: 'Coordinator invitation sent successfully',
+      invitedUser: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        username: user.username
+      }
     });
   } catch (error) {
     console.error('❌ inviteCoordinator error:', error);
@@ -603,6 +637,7 @@ exports.cancelCoordinatorInvite = async (req, res) => {
 // @access  Private (Organizer, Admin)
 exports.resendCoordinatorInvite = async (req, res) => {
   try {
+    console.log('=== resendCoordinatorInvite ===');
     const User = require('../models/User');
     const hackathon = await Hackathon.findById(req.params.id);
     const user = await User.findById(req.params.userId);
@@ -621,20 +656,37 @@ exports.resendCoordinatorInvite = async (req, res) => {
     if (!coordEntry || coordEntry.status === 'accepted') {
       return res.status(400).json({
         success: false,
-        message: 'No pending invitation found'
+        message: 'No pending invitation found for this user'
       });
     }
 
-    // Resend email
+    // Generate new token
+    const crypto = require('crypto');
     const token = crypto.randomBytes(32).toString('hex');
-    await emailService.sendCoordinatorInvitation(user, hackathon, req.user, token);
+    coordEntry.invitationToken = token;
+    coordEntry.invitedAt = new Date(); // Update invitation date
+    await user.save();
+
+    console.log('✅ Resending invitation to:', user.email);
+
+    // Resend email
+    try {
+      await emailService.sendCoordinatorInvitation(user, hackathon, req.user, token);
+      console.log('✅ Invitation email resent successfully');
+    } catch (emailError) {
+      console.error('⚠️ Failed to resend email:', emailError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send email. Please try again.'
+      });
+    }
 
     res.status(200).json({
       success: true,
-      message: 'Invitation resent successfully'
+      message: 'Invitation email sent successfully to ' + user.email
     });
   } catch (error) {
-    console.error('resendCoordinatorInvite error:', error);
+    console.error('❌ resendCoordinatorInvite error:', error);
     res.status(500).json({
       success: false,
       message: error.message

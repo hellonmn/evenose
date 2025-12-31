@@ -30,6 +30,8 @@ import TeamRequests from "./pages/TeamRequests";
 import EditHackathon from "./pages/EditHackathon";
 import TeamApprovals from "./pages/TeamApprovals";
 import CoordinatorTest from './pages/CoordinatorTest';
+import MyInvitations from './pages/MyInvitations';
+
 
 
 
@@ -95,6 +97,7 @@ function App() {
             />
 
               <Route path="/test-coordinator" element={<CoordinatorTest />} />
+              <Route path="/invitations" element={<ProtectedRoute><MyInvitations /></ProtectedRoute>} />
 
             <Route
               path="/register"

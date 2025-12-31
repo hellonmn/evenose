@@ -68,13 +68,14 @@ export const hackathonAPI = {
   getMyCoordinations: () => api.get('/hackathons/my/coordinations'),
   getCoordinatorInvitations: () => api.get('/hackathons/coordinator-invitations'),
   
+  
   // NEW: Coordinator management functions
   getCoordinators: (id) => api.get(`/hackathons/${id}/coordinators`),
-  inviteCoordinator: (id, data) => api.post(`/hackathons/${id}/coordinators/invite`, data),
   removeCoordinator: (id, userId) => api.delete(`/hackathons/${id}/coordinators/${userId}`),
   cancelCoordinatorInvite: (id, userId) => api.delete(`/hackathons/${id}/coordinators/${userId}/cancel`),
   resendCoordinatorInvite: (id, userId) => api.post(`/hackathons/${id}/coordinators/${userId}/resend`),
   acceptCoordinatorInvitation: (hackathonId) => api.post(`/hackathons/coordinators/accept`, { hackathonId }),
+  
   declineCoordinatorInvitation: (id) => api.post(`/hackathons/coordinators/decline/${id}`),
   updateCoordinatorPermissions: (hackathonId, userId, data) => 
     api.put(`/hackathons/${hackathonId}/coordinators/${userId}/permissions`, data),
