@@ -51,15 +51,10 @@ exports.registerTeam = async (req, res) => {
       });
     }
 
-    // Validate team size
+    // Validate team size - allow creation with any size, but note if it meets requirements
     const totalMembers = members ? members.length + 1 : 1; // +1 for leader
-    if (totalMembers < hackathon.teamConfig.minMembers || 
-        totalMembers > hackathon.teamConfig.maxMembers) {
-      return res.status(400).json({
-        success: false,
-        message: `Team size must be between ${hackathon.teamConfig.minMembers} and ${hackathon.teamConfig.maxMembers} members`
-      });
-    }
+    const meetsRequirements = totalMembers >= hackathon.teamConfig.minMembers && 
+                              totalMembers <= hackathon.teamConfig.maxMembers;
 
     // Check max teams limit
     if (hackathon.currentRegistrations >= hackathon.maxTeams) {
@@ -110,7 +105,8 @@ exports.registerTeam = async (req, res) => {
       members: teamMembers,
       projectTitle,
       projectDescription,
-      registrationStatus: hackathon.settings.autoAcceptTeams ? 'approved' : 'pending',
+      submissionStatus: 'draft', // Start as draft, needs confirmation before submission
+      registrationStatus: 'pending',
       payment: {
         status: hackathon.registrationFee.amount > 0 ? 'pending' : 'completed',
         amount: hackathon.registrationFee.amount,
@@ -139,8 +135,11 @@ exports.registerTeam = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Team registered successfully',
+      message: meetsRequirements 
+        ? 'Team registered successfully. You can now submit for approval.' 
+        : `Team created successfully. Add ${hackathon.teamConfig.minMembers - totalMembers} more member(s) to meet the minimum requirement of ${hackathon.teamConfig.minMembers} members before submitting for approval.`,
       team,
+      meetsRequirements,
       requiresPayment: hackathon.registrationFee.amount > 0
     });
   } catch (error) {
@@ -585,35 +584,51 @@ exports.rejectJoinRequest = async (req, res) => {
 // @access  Private (Admin, Organizer)
 exports.approveTeam = async (req, res) => {
   try {
-    const team = await Team.findById(req.params.id).populate('hackathon');
+    console.log('=== approveTeam Debug ===');
+    console.log('Team ID:', req.params.teamId);
+    console.log('User ID:', req.user._id);
+    
+    const team = await Team.findById(req.params.teamId).populate('hackathon');
 
     if (!team) {
+      console.log('❌ Team not found');
       return res.status(404).json({
         success: false,
         message: 'Team not found'
       });
     }
 
+    console.log('✅ Team found:', team.teamName);
+    console.log('Current submission status:', team.submissionStatus);
+
     // Check authorization
     const isOrganizer = team.hackathon.organizer.toString() === req.user._id.toString();
     const isAdmin = req.user.hasAnyRole(['admin', 'super_admin']);
 
     if (!isOrganizer && !isAdmin) {
+      console.log('❌ Not authorized');
       return res.status(403).json({
         success: false,
         message: 'Not authorized to approve teams'
       });
     }
 
+    console.log('✅ User authorized');
+
+    // Update both statuses for compatibility
+    team.submissionStatus = 'approved';
     team.registrationStatus = 'approved';
     team.approvedAt = new Date();
     team.approvedBy = req.user._id;
     await team.save();
 
+    console.log('✅ Team approved successfully');
+
     // Send notification email
     try {
       const leader = await User.findById(team.leader);
       await emailService.sendTeamApprovalNotification(leader, team, team.hackathon);
+      console.log('✅ Approval email sent');
     } catch (emailError) {
       console.error('Failed to send approval email:', emailError);
     }
@@ -624,6 +639,7 @@ exports.approveTeam = async (req, res) => {
       team
     });
   } catch (error) {
+    console.error('❌ approveTeam error:', error);
     res.status(500).json({
       success: false,
       message: error.message
@@ -632,32 +648,46 @@ exports.approveTeam = async (req, res) => {
 };
 
 // @desc    Reject team (Admin)
-// @route   PUT /api/teams/:id/reject
+// @route   POST /api/teams/:teamId/reject
 // @access  Private (Admin, Organizer)
 exports.rejectTeam = async (req, res) => {
   try {
+    console.log('=== rejectTeam Debug ===');
+    console.log('Team ID:', req.params.teamId);
+    console.log('Reason:', req.body.reason);
+    
     const { reason } = req.body;
-    const team = await Team.findById(req.params.id).populate('hackathon');
+    const team = await Team.findById(req.params.teamId).populate('hackathon');
 
     if (!team) {
+      console.log('❌ Team not found');
       return res.status(404).json({
         success: false,
         message: 'Team not found'
       });
     }
 
+    console.log('✅ Team found:', team.teamName);
+
     // Check authorization
     const isOrganizer = team.hackathon.organizer.toString() === req.user._id.toString();
     const isAdmin = req.user.hasAnyRole(['admin', 'super_admin']);
 
     if (!isOrganizer && !isAdmin) {
+      console.log('❌ Not authorized');
       return res.status(403).json({
         success: false,
         message: 'Not authorized to reject teams'
       });
     }
 
+    console.log('✅ User authorized');
+
+    // Return to draft status and set rejection reason
+    team.submissionStatus = 'draft';
     team.registrationStatus = 'rejected';
+    team.rejectionReason = reason || 'No reason provided';
+    
     if (reason) {
       team.notes.push({
         author: req.user._id,
@@ -668,10 +698,13 @@ exports.rejectTeam = async (req, res) => {
     }
     await team.save();
 
+    console.log('✅ Team rejected successfully');
+
     // Send notification email
     try {
       const leader = await User.findById(team.leader);
       await emailService.sendTeamRejectionNotification(leader, team, team.hackathon, reason);
+      console.log('✅ Rejection email sent');
     } catch (emailError) {
       console.error('Failed to send rejection email:', emailError);
     }
@@ -682,6 +715,7 @@ exports.rejectTeam = async (req, res) => {
       team
     });
   } catch (error) {
+    console.error('❌ rejectTeam error:', error);
     res.status(500).json({
       success: false,
       message: error.message
@@ -698,8 +732,15 @@ exports.getTeamsByHackathon = async (req, res) => {
     const { status, eliminated, page = 1, limit = 20 } = req.query;
 
     const query = { hackathon: hackathonId };
-    if (status) query.registrationStatus = status;
-    if (eliminated !== undefined) query.isEliminated = eliminated === 'true';
+    
+    // Only filter by status if explicitly provided
+    if (status) {
+      query.registrationStatus = status;
+    }
+    
+    if (eliminated !== undefined) {
+      query.isEliminated = eliminated === 'true';
+    }
 
     const teams = await Team.find(query)
       .populate('leader', 'fullName email username institution')
@@ -1141,21 +1182,50 @@ exports.getLeaderboard = async (req, res) => {
 // @access  Private
 exports.getMyTeams = async (req, res) => {
   try {
-    const teams = await Team.find({
+    // Get all teams where user is leader or member
+    const allTeams = await Team.find({
       $or: [
         { leader: req.user._id },
-        { 'members.user': req.user._id, 'members.status': 'active' }
+        { 'members.user': req.user._id }
       ]
     })
-      .populate('hackathon', 'title slug status hackathonStartDate hackathonEndDate')
+      .populate('hackathon', 'title slug status hackathonStartDate hackathonEndDate teamConfig')
       .populate('leader', 'fullName email')
       .populate('members.user', 'fullName email')
       .sort({ createdAt: -1 });
 
+    // Separate active teams from removed teams
+    const activeTeams = [];
+    const removedTeams = [];
+
+    allTeams.forEach(team => {
+      // Check if user is leader
+      if (team.leader._id.toString() === req.user._id.toString()) {
+        activeTeams.push(team);
+      } else {
+        // Check member status
+        const memberEntry = team.members.find(
+          m => m.user._id.toString() === req.user._id.toString()
+        );
+        
+        if (memberEntry) {
+          if (memberEntry.status === 'active') {
+            activeTeams.push(team);
+          } else if (memberEntry.status === 'removed') {
+            removedTeams.push({
+              ...team.toObject(),
+              userStatus: 'removed'
+            });
+          }
+        }
+      }
+    });
+
     res.status(200).json({
       success: true,
-      count: teams.length,
-      teams
+      count: activeTeams.length,
+      teams: activeTeams,
+      removedTeams: removedTeams
     });
   } catch (error) {
     res.status(500).json({
@@ -1411,6 +1481,7 @@ exports.confirmTeam = async (req, res) => {
     const registrationEnd = new Date(team.hackathon.registrationEndDate);
     
     if (team.hackathon.settings?.enforceRegistrationDeadline && now > registrationEnd) {
+      // Check if late registration is allowed
       if (!team.hackathon.settings?.allowLateRegistration) {
         return res.status(400).json({
           success: false,
@@ -1418,6 +1489,7 @@ exports.confirmTeam = async (req, res) => {
         });
       }
 
+      // Check strict enforcement
       if (team.hackathon.settings?.strictDeadlineEnforcement) {
         return res.status(400).json({
           success: false,
@@ -1435,6 +1507,7 @@ exports.confirmTeam = async (req, res) => {
           });
         }
 
+        // Add late fee to team
         team.payment.amount += team.hackathon.settings.lateRegistrationFee.amount;
         team.notes.push({
           author: req.user._id,
@@ -1447,7 +1520,7 @@ exports.confirmTeam = async (req, res) => {
     }
 
     // Check if team meets requirements
-    const activeMembers = team.members.filter(m => m.status === 'active');
+    const activeMembers = team.getActiveMembers();
     const minMembers = team.hackathon.teamConfig.minMembers;
     const maxMembers = team.hackathon.teamConfig.maxMembers;
 
@@ -1470,6 +1543,27 @@ exports.confirmTeam = async (req, res) => {
     team.submittedForApprovalAt = new Date();
     await team.save();
 
+    // Check for auto-approval
+    if (team.hackathon.settings?.enableAutoApproval) {
+      try {
+        const autoApprovalResult = await exports.checkAutoApproval({ params: { teamId: team._id } }, {
+          status: (code) => ({ json: (data) => data })
+        });
+
+        if (autoApprovalResult.autoApproved) {
+          return res.status(200).json({
+            success: true,
+            message: 'Team automatically approved!',
+            team: autoApprovalResult.team,
+            autoApproved: true
+          });
+        }
+      } catch (autoApprovalError) {
+        console.error('Auto-approval check failed:', autoApprovalError);
+        // Continue with manual approval if auto-approval fails
+      }
+    }
+
     res.status(200).json({
       success: true,
       message: 'Team submitted for approval successfully',
@@ -1483,14 +1577,14 @@ exports.confirmTeam = async (req, res) => {
   }
 };
 
-// @desc    Get submitted teams for approval
+// @desc    Get submitted teams for organizer approval
 // @route   GET /api/teams/hackathon/:hackathonId/submitted
 // @access  Private (Organizer/Coordinator)
 exports.getSubmittedTeams = async (req, res) => {
   try {
     const { hackathonId } = req.params;
+    
     const hackathon = await Hackathon.findById(hackathonId);
-
     if (!hackathon) {
       return res.status(404).json({
         success: false,
@@ -1498,7 +1592,7 @@ exports.getSubmittedTeams = async (req, res) => {
       });
     }
 
-    // Check authorization
+    // Check if user is organizer or coordinator
     const isOrganizer = hackathon.organizer.toString() === req.user._id.toString();
     const isCoordinator = req.user.isCoordinatorFor(hackathonId);
     
@@ -1511,10 +1605,10 @@ exports.getSubmittedTeams = async (req, res) => {
 
     const teams = await Team.find({
       hackathon: hackathonId,
-      submissionStatus: { $in: ['submitted', 'approved', 'draft'] }
+      submissionStatus: { $in: ['submitted', 'approved', 'rejected'] }
     })
-      .populate('leader', 'fullName email institution')
-      .populate('members.user', 'fullName email')
+      .populate('leader', 'fullName email username institution')
+      .populate('members.user', 'fullName email username')
       .populate('approvedBy', 'fullName')
       .sort({ submittedForApprovalAt: -1 });
 
@@ -1530,6 +1624,7 @@ exports.getSubmittedTeams = async (req, res) => {
     });
   }
 };
+
 
 // @desc    Bulk approve teams
 // @route   POST /api/teams/hackathon/:hackathonId/bulk-approve
@@ -1883,8 +1978,7 @@ exports.getTeamNotes = async (req, res) => {
     }
 
     // Check if user is team member or organizer/coordinator
-    const isTeamMember = team.members.some(m => m.user.toString() === req.user._id.toString() && m.status === 'active') || 
-                         team.leader.toString() === req.user._id.toString();
+    const isTeamMember = team.isMember(req.user._id) || team.isLeader(req.user._id);
     const isOrganizer = team.hackathon.organizer.toString() === req.user._id.toString();
     const isCoordinator = req.user.isCoordinatorFor(team.hackathon._id);
 
@@ -1942,7 +2036,7 @@ exports.checkAutoApproval = async (req, res) => {
 
     // Check if team meets auto-approval criteria
     const criteria = team.hackathon.settings.autoApprovalCriteria || {};
-    const activeMembers = team.members.filter(m => m.status === 'active');
+    const activeMembers = team.getActiveMembers();
     let eligible = true;
     let reason = '';
 
@@ -1993,7 +2087,7 @@ exports.checkAutoApproval = async (req, res) => {
       team.submissionStatus = 'approved';
       team.registrationStatus = 'approved';
       team.approvedAt = new Date();
-      team.approvedBy = team.hackathon.organizer;
+      team.approvedBy = team.hackathon.organizer; // System approval
       await team.save();
 
       // Send approval email

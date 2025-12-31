@@ -21,6 +21,8 @@ import {
   Crown,
   Calendar,
   Target,
+  Edit,
+  X,
 } from 'lucide-react';
 import { teamAPI } from '../services/api';
 import { useAuthStore } from '../store';
@@ -42,6 +44,8 @@ export default function TeamDetail() {
   const [searching, setSearching] = useState(false);
   const [inviteLink, setInviteLink] = useState('');
   const [pendingMembers, setPendingMembers] = useState([]);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [newTeamName, setNewTeamName] = useState('');
   const [submissionData, setSubmissionData] = useState({
     roundId: '',
     projectLink: '',
@@ -87,6 +91,12 @@ export default function TeamDetail() {
 
   const isTeamLead = () => {
     return team?.leader === user.id || team?.leader?._id === user.id;
+  };
+
+  const canModifyTeam = () => {
+    if (!isTeamLead()) return false;
+    // Can only modify if team is in draft status
+    return team?.submissionStatus === 'draft' || !team?.submissionStatus;
   };
 
   const handleSearchUsers = async () => {
@@ -238,6 +248,29 @@ export default function TeamDetail() {
     }
   };
 
+  const handleRenameTeam = async () => {
+    if (!newTeamName || newTeamName.trim() === '') {
+      toast.error('Please enter a team name');
+      return;
+    }
+
+    if (newTeamName.trim() === team.teamName) {
+      setShowRenameModal(false);
+      return;
+    }
+
+    try {
+      await teamAPI.update(team._id, { teamName: newTeamName.trim() });
+      toast.success('Team name updated successfully!');
+      setShowRenameModal(false);
+      setNewTeamName('');
+      fetchTeam();
+    } catch (error) {
+      console.error('Failed to rename team:', error);
+      toast.error(error.response?.data?.message || 'Failed to rename team');
+    }
+  };
+
   const canConfirmTeam = () => {
     if (!isTeamLead()) return false;
     if (team?.submissionStatus !== 'draft') return false;
@@ -318,8 +351,22 @@ export default function TeamDetail() {
           
           <div className="bg-white rounded-3xl shadow-lg p-8 border-2 border-gray-100">
             <div className="flex justify-between items-start mb-4">
-              <div>
-                <h1 className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{team.teamName}</h1>
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-2">
+                  <h1 className="text-4xl font-bold text-gray-900 tracking-tight">{team.teamName}</h1>
+                  {isTeamLead() && canModifyTeam() && (
+                    <button
+                      onClick={() => {
+                        setNewTeamName(team.teamName);
+                        setShowRenameModal(true);
+                      }}
+                      className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      title="Rename team"
+                    >
+                      <Edit className="w-5 h-5" />
+                    </button>
+                  )}
+                </div>
                 <p className="text-gray-600 flex items-center gap-2">
                   <Calendar className="w-4 h-4" />
                   {team.hackathon?.title}
@@ -431,7 +478,13 @@ export default function TeamDetail() {
                   {isTeamLead() && (
                     <button
                       onClick={() => setShowInviteModal(true)}
-                      className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl font-semibold hover:shadow-lg transition-all flex items-center gap-2"
+                      disabled={!canModifyTeam()}
+                      className={`px-6 py-3 rounded-xl font-semibold transition-all flex items-center gap-2 ${
+                        canModifyTeam()
+                          ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:shadow-lg'
+                          : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      }`}
+                      title={!canModifyTeam() ? 'Cannot modify team after submission' : 'Invite users to team'}
                     >
                       <Search className="w-5 h-5" />
                       Invite Users
@@ -476,7 +529,7 @@ export default function TeamDetail() {
                         </div>
                         
                         <div className="flex items-center gap-3">
-                          {isTeamLead() && member.role !== 'leader' && (
+                          {isTeamLead() && member.role !== 'leader' && canModifyTeam() && (
                             <button
                               onClick={() => handleRemoveMember(member._id)}
                               className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -485,7 +538,7 @@ export default function TeamDetail() {
                               <UserMinus className="w-4 h-4" />
                             </button>
                           )}
-                          {!isTeamLead() && isCurrentUser && (
+                          {!isTeamLead() && isCurrentUser && canModifyTeam() && (
                             <button
                               onClick={handleLeaveTeam}
                               className="px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors font-semibold text-sm"
@@ -1054,6 +1107,57 @@ export default function TeamDetail() {
                     className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl font-semibold hover:shadow-lg transition-all"
                   >
                     Submit
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Rename Team Modal */}
+        {showRenameModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h2 className="text-2xl font-bold text-gray-900">Rename Team</h2>
+                <button
+                  onClick={() => setShowRenameModal(false)}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Team Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={newTeamName}
+                    onChange={(e) => setNewTeamName(e.target.value)}
+                    placeholder="Enter new team name"
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    autoFocus
+                  />
+                  <p className="text-sm text-gray-500 mt-2">
+                    You can only rename your team before submitting for approval.
+                  </p>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowRenameModal(false)}
+                    className="flex-1 py-3 border-2 border-gray-200 text-gray-700 rounded-xl font-semibold hover:bg-gray-50 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleRenameTeam}
+                    className="flex-1 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-xl font-semibold hover:shadow-lg transition-all"
+                  >
+                    Save
                   </button>
                 </div>
               </div>

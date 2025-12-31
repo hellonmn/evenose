@@ -27,6 +27,9 @@ import TeamDetail from "./pages/TeamDetail";
 import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
 import TeamRequests from "./pages/TeamRequests";
+import EditHackathon from "./pages/EditHackathon";
+import TeamApprovals from "./pages/TeamApprovals";
+import CoordinatorTest from './pages/CoordinatorTest';
 
 
 
@@ -90,6 +93,9 @@ function App() {
                 </PublicRoute>
               }
             />
+
+              <Route path="/test-coordinator" element={<CoordinatorTest />} />
+
             <Route
               path="/register"
               element={
@@ -143,6 +149,22 @@ function App() {
                 </ProtectedRoute>
               }
             />
+            <Route 
+     path="/hackathons/:id/edit" 
+     element={
+       <ProtectedRoute>
+         <EditHackathon />
+       </ProtectedRoute>
+     } 
+   />
+            <Route 
+     path="/hackathons/:id/approvals" 
+     element={
+       <ProtectedRoute>
+         <TeamApprovals />
+       </ProtectedRoute>
+     } 
+   />
             <Route
               path="/my-coordinations"
               element={

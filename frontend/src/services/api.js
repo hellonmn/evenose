@@ -67,13 +67,23 @@ export const hackathonAPI = {
   getMyHackathons: () => api.get('/hackathons/my/organized'),
   getMyCoordinations: () => api.get('/hackathons/my/coordinations'),
   getCoordinatorInvitations: () => api.get('/hackathons/coordinator-invitations'),
+  
+  // NEW: Coordinator management functions
+  getCoordinators: (id) => api.get(`/hackathons/${id}/coordinators`),
   inviteCoordinator: (id, data) => api.post(`/hackathons/${id}/coordinators/invite`, data),
-  acceptCoordinatorInvitation: (token, data) => api.post(`/hackathons/coordinators/accept/${token}`, data),
+  removeCoordinator: (id, userId) => api.delete(`/hackathons/${id}/coordinators/${userId}`),
+  cancelCoordinatorInvite: (id, userId) => api.delete(`/hackathons/${id}/coordinators/${userId}/cancel`),
+  resendCoordinatorInvite: (id, userId) => api.post(`/hackathons/${id}/coordinators/${userId}/resend`),
+  acceptCoordinatorInvitation: (hackathonId) => api.post(`/hackathons/coordinators/accept`, { hackathonId }),
   declineCoordinatorInvitation: (id) => api.post(`/hackathons/coordinators/decline/${id}`),
   updateCoordinatorPermissions: (hackathonId, userId, data) => 
     api.put(`/hackathons/${hackathonId}/coordinators/${userId}/permissions`, data),
+  
+  // Judge management
   inviteJudge: (id, data) => api.post(`/hackathons/${id}/judges/invite`, data),
   acceptJudgeInvitation: (token, data) => api.post(`/hackathons/judges/accept/${token}`, data),
+  
+  // Analytics
   getAnalytics: (id, params) => api.get(`/hackathons/${id}/analytics`, { params }),
   exportAnalytics: (id) => api.get(`/hackathons/${id}/analytics/export`, { responseType: 'blob' }),
 };

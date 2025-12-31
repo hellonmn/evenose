@@ -82,16 +82,34 @@ exports.authorize = (...roles) => {
 exports.isOrganizer = async (req, res, next) => {
   try {
     const Hackathon = require('../models/Hackathon');
-    const hackathonId = req.params.hackathonId || req.body.hackathon;
+    const hackathonId = req.params.id || req.params.hackathonId || req.body.hackathon;
+
+    console.log('=== isOrganizer Middleware Debug ===');
+    console.log('Hackathon ID:', hackathonId);
+    console.log('User ID:', req.user._id);
+    console.log('Params:', req.params);
+
+    if (!hackathonId) {
+      console.log('❌ No hackathon ID provided');
+      return res.status(400).json({
+        success: false,
+        message: 'Hackathon ID is required'
+      });
+    }
 
     const hackathon = await Hackathon.findById(hackathonId);
+    console.log('Hackathon found:', !!hackathon);
 
     if (!hackathon) {
+      console.log('❌ Hackathon not found in database');
       return res.status(404).json({
         success: false,
         message: 'Hackathon not found'
       });
     }
+
+    console.log('Hackathon organizer:', hackathon.organizer);
+    console.log('Match?', hackathon.organizer.toString() === req.user._id.toString());
 
     if (hackathon.organizer.toString() !== req.user._id.toString() && 
         !req.user.hasAnyRole(['admin', 'super_admin'])) {
@@ -104,9 +122,11 @@ exports.isOrganizer = async (req, res, next) => {
     req.hackathon = hackathon;
     next();
   } catch (error) {
+    console.error('❌ isOrganizer middleware error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error checking organizer status'
+      message: 'Error checking organizer status',
+      error: error.message
     });
   }
 };
@@ -115,7 +135,7 @@ exports.isOrganizer = async (req, res, next) => {
 exports.isCoordinator = async (req, res, next) => {
   try {
     const Hackathon = require('../models/Hackathon');
-    const hackathonId = req.params.hackathonId || req.body.hackathon;
+    const hackathonId = req.params.id || req.params.hackathonId || req.body.hackathon;
 
     const hackathon = await Hackathon.findById(hackathonId);
 
@@ -153,7 +173,7 @@ exports.isCoordinator = async (req, res, next) => {
 exports.isJudge = async (req, res, next) => {
   try {
     const Hackathon = require('../models/Hackathon');
-    const hackathonId = req.params.hackathonId || req.body.hackathon;
+    const hackathonId = req.params.id || req.params.hackathonId || req.body.hackathon;
 
     const hackathon = await Hackathon.findById(hackathonId);
 

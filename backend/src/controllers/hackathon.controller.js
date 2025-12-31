@@ -1,23 +1,44 @@
-// HACKATHON CONTROLLER FIX
-// Place this file temporarily as hackathon.controller.js to diagnose the issue
-
 const Hackathon = require('../models/Hackathon');
 const User = require('../models/User');
+const Team = require('../models/Team');
 const emailService = require('../services/email.service');
 const crypto = require('crypto');
 
 // @desc    Create hackathon
 // @route   POST /api/hackathons
-// @access  Private
+// @access  Private (Admin, Organizer with subscription)
 exports.createHackathon = async (req, res) => {
   try {
-    const hackathon = await Hackathon.create({
-      ...req.body,
-      organizer: req.user._id
-    });
+    const bypassCheck = process.env.BYPASS_SUBSCRIPTION_CHECK === 'true' || process.env.NODE_ENV === 'development';
+    
+    // Check if user can create hackathons
+    if (!req.user.hasAnyRole(['admin', 'super_admin']) && !bypassCheck) {
+      // Only check subscription if not in bypass mode
+      if (!req.user.subscription || 
+          !req.user.subscription.features.canCreateHackathons || 
+          req.user.subscription.status !== 'active') {
+        return res.status(403).json({
+          success: false,
+          message: 'Active subscription with hackathon creation permission required',
+          hint: 'Set BYPASS_SUBSCRIPTION_CHECK=true in .env to bypass this check in development'
+        });
+      }
+    }
+
+    // Set organizer
+    req.body.organizer = req.user._id;
+    req.body.organizerDetails = {
+      name: req.user.fullName,
+      email: req.user.email,
+      phone: req.user.phone,
+      organization: req.user.institution
+    };
+
+    const hackathon = await Hackathon.create(req.body);
 
     res.status(201).json({
       success: true,
+      message: 'Hackathon created successfully',
       hackathon
     });
   } catch (error) {
@@ -33,25 +54,34 @@ exports.createHackathon = async (req, res) => {
 // @access  Public
 exports.getHackathons = async (req, res) => {
   try {
-    const { status, mode, search } = req.query;
-    const query = {};
+    const { status, mode, search, page = 1, limit = 10, featured } = req.query;
+
+    const query = { isPublic: true };
 
     if (status) query.status = status;
     if (mode) query.mode = mode;
+    if (featured === 'true') query.isFeatured = true;
     if (search) {
       query.$or = [
         { title: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } }
       ];
     }
 
     const hackathons = await Hackathon.find(query)
-      .populate('organizer', 'fullName email')
-      .sort({ createdAt: -1 });
+      .populate('organizer', 'fullName institution')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const count = await Hackathon.countDocuments(query);
 
     res.status(200).json({
       success: true,
-      count: hackathons.length,
+      count,
+      totalPages: Math.ceil(count / limit),
+      currentPage: parseInt(page),
       hackathons
     });
   } catch (error) {
@@ -68,7 +98,7 @@ exports.getHackathons = async (req, res) => {
 exports.getHackathon = async (req, res) => {
   try {
     const hackathon = await Hackathon.findById(req.params.id)
-      .populate('organizer', 'fullName email organization')
+      .populate('organizer', 'fullName email institution profile')
       .populate('coordinators.user', 'fullName email')
       .populate('judges.user', 'fullName email');
 
@@ -78,6 +108,10 @@ exports.getHackathon = async (req, res) => {
         message: 'Hackathon not found'
       });
     }
+
+    // Increment views
+    hackathon.views += 1;
+    await hackathon.save();
 
     res.status(200).json({
       success: true,
@@ -93,14 +127,10 @@ exports.getHackathon = async (req, res) => {
 
 // @desc    Update hackathon
 // @route   PUT /api/hackathons/:id
-// @access  Private (Organizer)
+// @access  Private (Organizer, Admin)
 exports.updateHackathon = async (req, res) => {
   try {
-    const hackathon = await Hackathon.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
+    let hackathon = await Hackathon.findById(req.params.id);
 
     if (!hackathon) {
       return res.status(404).json({
@@ -109,8 +139,24 @@ exports.updateHackathon = async (req, res) => {
       });
     }
 
+    // Check authorization
+    if (hackathon.organizer.toString() !== req.user._id.toString() && 
+        !req.user.hasAnyRole(['admin', 'super_admin'])) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update this hackathon'
+      });
+    }
+
+    hackathon = await Hackathon.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+
     res.status(200).json({
       success: true,
+      message: 'Hackathon updated successfully',
       hackathon
     });
   } catch (error) {
@@ -123,10 +169,10 @@ exports.updateHackathon = async (req, res) => {
 
 // @desc    Delete hackathon
 // @route   DELETE /api/hackathons/:id
-// @access  Private (Organizer)
+// @access  Private (Organizer, Admin)
 exports.deleteHackathon = async (req, res) => {
   try {
-    const hackathon = await Hackathon.findByIdAndDelete(req.params.id);
+    const hackathon = await Hackathon.findById(req.params.id);
 
     if (!hackathon) {
       return res.status(404).json({
@@ -134,6 +180,17 @@ exports.deleteHackathon = async (req, res) => {
         message: 'Hackathon not found'
       });
     }
+
+    // Check authorization
+    if (hackathon.organizer.toString() !== req.user._id.toString() && 
+        !req.user.hasAnyRole(['admin', 'super_admin'])) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to delete this hackathon'
+      });
+    }
+
+    await hackathon.deleteOne();
 
     res.status(200).json({
       success: true,
@@ -147,7 +204,7 @@ exports.deleteHackathon = async (req, res) => {
   }
 };
 
-// @desc    Get my organized hackathons
+// @desc    Get my hackathons (as organizer)
 // @route   GET /api/hackathons/my/organized
 // @access  Private
 exports.getMyHackathons = async (req, res) => {
@@ -173,16 +230,25 @@ exports.getMyHackathons = async (req, res) => {
 // @access  Private
 exports.getMyCoordinations = async (req, res) => {
   try {
-    const hackathons = await Hackathon.find({
-      'coordinators.user': req.user._id
-    })
-      .populate('organizer', 'fullName email')
-      .sort({ createdAt: -1 });
+    const user = await User.findById(req.user._id)
+      .populate({
+        path: 'coordinatorFor.hackathon',
+        select: 'title slug status hackathonStartDate hackathonEndDate mode'
+      });
+
+    const coordinations = user.coordinatorFor
+      .filter(coord => coord.status === 'accepted')
+      .map(coord => ({
+        hackathon: coord.hackathon,
+        permissions: coord.permissions,
+        invitedAt: coord.invitedAt,
+        acceptedAt: coord.acceptedAt
+      }));
 
     res.status(200).json({
       success: true,
-      count: hackathons.length,
-      hackathons
+      count: coordinations.length,
+      coordinations
     });
   } catch (error) {
     res.status(500).json({
@@ -194,64 +260,95 @@ exports.getMyCoordinations = async (req, res) => {
 
 // @desc    Invite coordinator
 // @route   POST /api/hackathons/:id/coordinators/invite
-// @access  Private (Organizer)
+// @access  Private (Organizer, Admin)
 exports.inviteCoordinator = async (req, res) => {
   try {
-    const { email, permissions } = req.body;
-    const hackathon = await Hackathon.findById(req.params.id);
+    console.log('=== inviteCoordinator Debug ===');
+    console.log('Request params:', req.params);
+    console.log('Request body:', req.body);
+    console.log('Hackathon from middleware:', req.hackathon ? 'exists' : 'not set');
+    
+    const { emailOrUsername, permissions } = req.body;
+    // Use hackathon from middleware if available, otherwise fetch
+    const hackathon = req.hackathon || await Hackathon.findById(req.params.id);
 
     if (!hackathon) {
+      console.log('❌ Hackathon not found');
       return res.status(404).json({
         success: false,
         message: 'Hackathon not found'
       });
     }
 
-    const user = await User.findOne({ email });
+    console.log('✅ Hackathon found:', hackathon.title);
+
+    // Find user
+    const user = await User.findOne({
+      $or: [{ email: emailOrUsername }, { username: emailOrUsername }]
+    });
+
     if (!user) {
+      console.log('❌ User not found:', emailOrUsername);
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    // Check if already a coordinator
-    const existingCoordinator = hackathon.coordinators.find(
-      c => c.user.toString() === user._id.toString()
-    );
+    console.log('✅ User found:', user.email);
 
-    if (existingCoordinator) {
+    // Check if user is already a participant in this hackathon
+    const Team = require('../models/Team');
+    const isParticipant = await Team.findOne({
+      hackathon: hackathon._id,
+      members: user._id
+    });
+
+    if (isParticipant) {
+      console.log('❌ User is participant in this hackathon');
       return res.status(400).json({
         success: false,
-        message: 'User is already a coordinator'
+        message: 'This user is already a participant in this hackathon and cannot be a coordinator'
       });
     }
 
-    // Generate invitation token
-    const invitationToken = crypto.randomBytes(32).toString('hex');
+    // Check if already a coordinator
+    const existingCoord = user.coordinatorFor.find(
+      c => c.hackathon.toString() === hackathon._id.toString()
+    );
 
-    // Add coordinator
-    hackathon.coordinators.push({
-      user: user._id,
+    if (existingCoord) {
+      console.log('❌ User already coordinator');
+      return res.status(400).json({
+        success: false,
+        message: 'User is already a coordinator for this hackathon'
+      });
+    }
+
+    // Add to user's coordinatorFor
+    const token = crypto.randomBytes(32).toString('hex');
+    user.coordinatorFor.push({
+      hackathon: hackathon._id,
       permissions: permissions || {},
-      invitationToken,
-      invitedAt: Date.now()
+      invitedBy: req.user._id,
+      invitedAt: new Date(),
+      status: 'pending'
     });
+    await user.save();
 
-    await hackathon.save();
+    console.log('✅ Coordinator added to user');
 
     // Send invitation email
-    try {
-      await emailService.sendCoordinatorInvitation(user, hackathon, req.user, invitationToken);
-    } catch (emailError) {
-      console.error('Failed to send invitation email:', emailError);
-    }
+    await emailService.sendCoordinatorInvitation(user, hackathon, req.user, token);
+
+    console.log('✅ Invitation email sent');
 
     res.status(200).json({
       success: true,
-      message: 'Coordinator invitation sent'
+      message: 'Coordinator invitation sent successfully'
     });
   } catch (error) {
+    console.error('❌ inviteCoordinator error:', error);
     res.status(500).json({
       success: false,
       message: error.message
@@ -264,37 +361,42 @@ exports.inviteCoordinator = async (req, res) => {
 // @access  Private
 exports.acceptCoordinatorInvitation = async (req, res) => {
   try {
-    const { token } = req.params;
+    const { hackathonId } = req.body;
 
-    const hackathon = await Hackathon.findOne({
-      'coordinators.invitationToken': token
-    });
-
-    if (!hackathon) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invalid invitation token'
-      });
-    }
-
-    const coordinator = hackathon.coordinators.find(
-      c => c.invitationToken === token
+    const user = await User.findById(req.user._id);
+    const coordination = user.coordinatorFor.find(
+      c => c.hackathon.toString() === hackathonId && c.status === 'pending'
     );
 
-    if (coordinator.user.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
+    if (!coordination) {
+      return res.status(404).json({
         success: false,
-        message: 'Not authorized'
+        message: 'Invitation not found'
       });
     }
 
-    coordinator.status = 'accepted';
-    coordinator.invitationToken = undefined;
+    coordination.status = 'accepted';
+    coordination.acceptedAt = new Date();
+    
+    // Add coordinator role if not present
+    if (!user.roles.includes('coordinator')) {
+      user.roles.push('coordinator');
+    }
+
+    await user.save();
+
+    // Add to hackathon's coordinators list
+    const hackathon = await Hackathon.findById(hackathonId);
+    hackathon.coordinators.push({
+      user: user._id,
+      permissions: coordination.permissions,
+      addedAt: new Date()
+    });
     await hackathon.save();
 
     res.status(200).json({
       success: true,
-      message: 'Invitation accepted'
+      message: 'Coordinator invitation accepted'
     });
   } catch (error) {
     res.status(500).json({
@@ -306,7 +408,7 @@ exports.acceptCoordinatorInvitation = async (req, res) => {
 
 // @desc    Update coordinator permissions
 // @route   PUT /api/hackathons/:id/coordinators/:userId/permissions
-// @access  Private (Organizer)
+// @access  Private (Organizer, Admin)
 exports.updateCoordinatorPermissions = async (req, res) => {
   try {
     const { permissions } = req.body;
@@ -330,12 +432,23 @@ exports.updateCoordinatorPermissions = async (req, res) => {
       });
     }
 
-    coordinator.permissions = permissions;
+    coordinator.permissions = { ...coordinator.permissions, ...permissions };
     await hackathon.save();
+
+    // Update in user model
+    const user = await User.findById(req.params.userId);
+    const userCoord = user.coordinatorFor.find(
+      c => c.hackathon.toString() === hackathon._id.toString()
+    );
+    if (userCoord) {
+      userCoord.permissions = coordinator.permissions;
+      await user.save();
+    }
 
     res.status(200).json({
       success: true,
-      message: 'Permissions updated'
+      message: 'Coordinator permissions updated successfully',
+      permissions: coordinator.permissions
     });
   } catch (error) {
     res.status(500).json({
@@ -345,12 +458,196 @@ exports.updateCoordinatorPermissions = async (req, res) => {
   }
 };
 
+// @desc    Get coordinators for a hackathon
+// @route   GET /api/hackathons/:id/coordinators
+// @access  Private (Organizer, Admin, Coordinator)
+exports.getCoordinators = async (req, res) => {
+  try {
+    console.log('=== getCoordinators Debug ===');
+    console.log('Hackathon ID:', req.params.id);
+    console.log('User ID:', req.user._id);
+    
+    const hackathon = await Hackathon.findById(req.params.id);
+    
+    if (!hackathon) {
+      console.log('❌ Hackathon not found');
+      return res.status(404).json({
+        success: false,
+        message: 'Hackathon not found'
+      });
+    }
+
+    console.log('✅ Hackathon found:', hackathon.title);
+
+    // Get all users who are coordinators for this hackathon
+    const User = require('../models/User');
+    const allUsers = await User.find({
+      'coordinatorFor.hackathon': hackathon._id
+    });
+
+    console.log('Found users with coordinator entries:', allUsers.length);
+
+    const coordinators = [];
+    const pending = [];
+
+    allUsers.forEach(user => {
+      const coordEntry = user.coordinatorFor.find(
+        c => c.hackathon.toString() === hackathon._id.toString()
+      );
+      
+      if (coordEntry) {
+        const userData = {
+          _id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          username: user.username,
+          profilePicture: user.profilePicture,
+          permissions: coordEntry.permissions,
+          invitedAt: coordEntry.invitedAt,
+          invitedBy: coordEntry.invitedBy,
+          status: coordEntry.status
+        };
+
+        if (coordEntry.status === 'accepted') {
+          coordinators.push(userData);
+        } else {
+          pending.push(userData);
+        }
+      }
+    });
+
+    console.log('✅ Coordinators:', coordinators.length, 'Pending:', pending.length);
+
+    res.status(200).json({
+      success: true,
+      coordinators,
+      pending
+    });
+  } catch (error) {
+    console.error('❌ getCoordinators error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// @desc    Remove coordinator from hackathon
+// @route   DELETE /api/hackathons/:id/coordinators/:userId
+// @access  Private (Organizer, Admin)
+exports.removeCoordinator = async (req, res) => {
+  try {
+    const User = require('../models/User');
+    const user = await User.findById(req.params.userId);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.coordinatorFor = user.coordinatorFor.filter(
+      c => c.hackathon.toString() !== req.params.id
+    );
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Coordinator removed successfully'
+    });
+  } catch (error) {
+    console.error('removeCoordinator error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// @desc    Cancel coordinator invitation
+// @route   DELETE /api/hackathons/:id/coordinators/:userId/cancel
+// @access  Private (Organizer, Admin)
+exports.cancelCoordinatorInvite = async (req, res) => {
+  try {
+    const User = require('../models/User');
+    const user = await User.findById(req.params.userId);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.coordinatorFor = user.coordinatorFor.filter(
+      c => c.hackathon.toString() !== req.params.id || c.status === 'accepted'
+    );
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Invitation cancelled successfully'
+    });
+  } catch (error) {
+    console.error('cancelCoordinatorInvite error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// @desc    Resend coordinator invitation
+// @route   POST /api/hackathons/:id/coordinators/:userId/resend
+// @access  Private (Organizer, Admin)
+exports.resendCoordinatorInvite = async (req, res) => {
+  try {
+    const User = require('../models/User');
+    const hackathon = await Hackathon.findById(req.params.id);
+    const user = await User.findById(req.params.userId);
+    
+    if (!hackathon || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hackathon or user not found'
+      });
+    }
+
+    const coordEntry = user.coordinatorFor.find(
+      c => c.hackathon.toString() === hackathon._id.toString()
+    );
+
+    if (!coordEntry || coordEntry.status === 'accepted') {
+      return res.status(400).json({
+        success: false,
+        message: 'No pending invitation found'
+      });
+    }
+
+    // Resend email
+    const token = crypto.randomBytes(32).toString('hex');
+    await emailService.sendCoordinatorInvitation(user, hackathon, req.user, token);
+
+    res.status(200).json({
+      success: true,
+      message: 'Invitation resent successfully'
+    });
+  } catch (error) {
+    console.error('resendCoordinatorInvite error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
 // @desc    Invite judge
 // @route   POST /api/hackathons/:id/judges/invite
-// @access  Private (Organizer)
+// @access  Private (Organizer, Admin)
 exports.inviteJudge = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { emailOrUsername, assignedRounds } = req.body;
     const hackathon = await Hackathon.findById(req.params.id);
 
     if (!hackathon) {
@@ -360,7 +657,11 @@ exports.inviteJudge = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email });
+    // Find user
+    const user = await User.findOne({
+      $or: [{ email: emailOrUsername }, { username: emailOrUsername }]
+    });
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -369,39 +670,33 @@ exports.inviteJudge = async (req, res) => {
     }
 
     // Check if already a judge
-    const existingJudge = hackathon.judges.find(
-      j => j.user.toString() === user._id.toString()
+    const existingJudge = user.judgeFor.find(
+      j => j.hackathon.toString() === hackathon._id.toString()
     );
 
     if (existingJudge) {
       return res.status(400).json({
         success: false,
-        message: 'User is already a judge'
+        message: 'User is already a judge for this hackathon'
       });
     }
 
-    // Generate invitation token
-    const invitationToken = crypto.randomBytes(32).toString('hex');
-
-    // Add judge
-    hackathon.judges.push({
-      user: user._id,
-      invitationToken,
-      invitedAt: Date.now()
+    // Add to user's judgeFor
+    const token = crypto.randomBytes(32).toString('hex');
+    user.judgeFor.push({
+      hackathon: hackathon._id,
+      invitedBy: req.user._id,
+      invitedAt: new Date(),
+      status: 'pending'
     });
-
-    await hackathon.save();
+    await user.save();
 
     // Send invitation email
-    try {
-      await emailService.sendJudgeInvitation(user, hackathon, req.user, invitationToken);
-    } catch (emailError) {
-      console.error('Failed to send invitation email:', emailError);
-    }
+    await emailService.sendJudgeInvitation(user, hackathon, req.user, token);
 
     res.status(200).json({
       success: true,
-      message: 'Judge invitation sent'
+      message: 'Judge invitation sent successfully'
     });
   } catch (error) {
     res.status(500).json({
@@ -416,37 +711,44 @@ exports.inviteJudge = async (req, res) => {
 // @access  Private
 exports.acceptJudgeInvitation = async (req, res) => {
   try {
-    const { token } = req.params;
+    const { hackathonId } = req.body;
 
-    const hackathon = await Hackathon.findOne({
-      'judges.invitationToken': token
-    });
-
-    if (!hackathon) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invalid invitation token'
-      });
-    }
-
-    const judge = hackathon.judges.find(
-      j => j.invitationToken === token
+    const user = await User.findById(req.user._id);
+    const judgeEntry = user.judgeFor.find(
+      j => j.hackathon.toString() === hackathonId && j.status === 'pending'
     );
 
-    if (judge.user.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
+    if (!judgeEntry) {
+      return res.status(404).json({
         success: false,
-        message: 'Not authorized'
+        message: 'Invitation not found'
       });
     }
 
-    judge.status = 'accepted';
-    judge.invitationToken = undefined;
+    judgeEntry.status = 'accepted';
+    judgeEntry.acceptedAt = new Date();
+    
+    // Add judge role if not present
+    if (!user.roles.includes('judge')) {
+      user.roles.push('judge');
+    }
+
+    await user.save();
+
+    // Add to hackathon's judges list
+    const hackathon = await Hackathon.findById(hackathonId);
+    hackathon.judges.push({
+      user: user._id,
+      name: user.fullName,
+      bio: user.profile?.bio,
+      photo: user.profile?.avatar,
+      expertise: user.profile?.skills
+    });
     await hackathon.save();
 
     res.status(200).json({
       success: true,
-      message: 'Invitation accepted'
+      message: 'Judge invitation accepted'
     });
   } catch (error) {
     res.status(500).json({
@@ -456,5 +758,4 @@ exports.acceptJudgeInvitation = async (req, res) => {
   }
 };
 
-// IMPORTANT: Make sure all functions are exported
 module.exports = exports;

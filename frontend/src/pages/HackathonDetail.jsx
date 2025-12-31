@@ -23,6 +23,7 @@ import {
   Share2,
   Copy,
   Search,
+  Shield,
 } from 'lucide-react';
 import { hackathonAPI, teamAPI } from '../services/api';
 import { useAuthStore } from '../store';
@@ -30,6 +31,7 @@ import Badge from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import Input from '../components/ui/Input';
+import CoordinatorsManagement from './CoordinatorsManagement ';
 
 export default function HackathonDetail() {
   const { id } = useParams();
@@ -103,14 +105,25 @@ export default function HackathonDetail() {
 
   const isOrganizerOrCoordinator = (hack = hackathon) => {
     if (!hack || !user) return false;
-    const isOrg = hack.organizer?._id === user._id || hack.organizer === user._id;
-    const isCoord = user.coordinatorFor?.some(c => c.hackathon === hack._id || c.hackathon?._id === hack._id);
+    const isOrg = hack.organizer?._id === user._id || 
+                  hack.organizer === user._id || 
+                  hack.organizer?._id === user.id || 
+                  hack.organizer === user.id;
+    const isCoord = user.coordinatorFor?.some(c => 
+      c.hackathon === hack._id || 
+      c.hackathon?._id === hack._id ||
+      c.hackathon === hack.id ||
+      c.hackathon?._id === hack.id
+    );
     return isOrg || isCoord;
   };
 
   const isOrganizer = (hack = hackathon) => {
     if (!hack || !user) return false;
-    return hack.organizer?._id === user._id || hack.organizer === user._id;
+    return hack.organizer?._id === user._id || 
+           hack.organizer === user._id || 
+           hack.organizer?._id === user.id || 
+           hack.organizer === user.id;
   };
 
   const isAdmin = () => {
@@ -179,6 +192,12 @@ export default function HackathonDetail() {
   };
 
   const handleInvite = async (data) => {
+    if (!hackathon || !hackathon._id) {
+      toast.error('Hackathon data not loaded. Please refresh the page.');
+      console.error('Hackathon object:', hackathon);
+      return;
+    }
+
     try {
       if (inviteType === 'coordinator') {
         await hackathonAPI.inviteCoordinator(hackathon._id, {
@@ -202,6 +221,7 @@ export default function HackathonDetail() {
       setShowInviteModal(false);
     } catch (error) {
       console.error('Failed to invite:', error);
+      console.error('Error details:', error.response?.data);
       toast.error(error.response?.data?.message || 'Failed to send invitation');
     }
   };
@@ -256,7 +276,11 @@ export default function HackathonDetail() {
     tabs.push({ id: 'teams', label: 'Teams', icon: Users });
   }
 
-  if (isAdmin()) {
+  if (isOrganizer() || isAdmin()) {
+    tabs.push({ id: 'coordinators', label: 'Coordinators', icon: Shield });
+  }
+
+  if (isOrganizerOrCoordinator() || isAdmin()) {
     tabs.push({ id: 'registrations', label: 'Registrations', icon: CheckCircle });
   }
 
@@ -453,8 +477,20 @@ export default function HackathonDetail() {
               }}
             />
           )}
-          {activeTab === 'registrations' && isAdmin() && (
-            <RegistrationsTab hackathon={hackathon} teams={teams} />
+          {activeTab === 'coordinators' && (isOrganizer() || isAdmin()) && (
+            <CoordinatorsManagement 
+              hackathon={hackathon}
+              isOrganizer={isOrganizer()}
+              onRefresh={fetchHackathon}
+            />
+          )}
+          {activeTab === 'registrations' && (isOrganizerOrCoordinator() || isAdmin()) && (
+            <RegistrationsTab 
+              hackathon={hackathon} 
+              teams={teams}
+              isOrganizer={isOrganizer()}
+              onRefresh={fetchHackathon}
+            />
           )}
         </motion.div>
       </div>
@@ -956,14 +992,18 @@ function TeamsTab({ teams, hackathon, isOrganizer, isAdmin, onInvite }) {
 }
 
 // Registrations Tab (Admin Only)
-function RegistrationsTab({ hackathon, teams }) {
+function RegistrationsTab({ hackathon, teams, isOrganizer, onRefresh }) {
+  const navigate = useNavigate();
+  
   const stats = {
     total: teams.length,
-    approved: teams.filter(t => t.registrationStatus === 'approved').length,
-    pending: teams.filter(t => t.registrationStatus === 'pending').length,
-    rejected: teams.filter(t => t.registrationStatus === 'rejected').length,
+    approved: teams.filter(t => t.submissionStatus === 'approved' || t.registrationStatus === 'approved').length,
+    pending: teams.filter(t => t.submissionStatus === 'submitted' || (t.submissionStatus === 'draft' && t.registrationStatus === 'pending')).length,
+    rejected: teams.filter(t => t.submissionStatus === 'draft' && t.rejectionReason).length,
     paid: teams.filter(t => t.payment?.status === 'completed').length,
   };
+
+  const pendingTeams = teams.filter(t => t.submissionStatus === 'submitted');
 
   return (
     <div className="space-y-6">
@@ -991,6 +1031,31 @@ function RegistrationsTab({ hackathon, teams }) {
         </div>
       </div>
 
+      {/* Pending Approvals Alert */}
+      {isOrganizer && pendingTeams.length > 0 && (
+        <div className="bg-yellow-50 border-2 border-yellow-200 rounded-2xl p-6">
+          <div className="flex items-start gap-4">
+            <AlertCircle className="w-6 h-6 text-yellow-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h4 className="font-bold text-yellow-900 mb-2">
+                {pendingTeams.length} team{pendingTeams.length !== 1 ? 's' : ''} waiting for approval
+              </h4>
+              <p className="text-yellow-700 mb-3">
+                Review and approve team registrations to allow participants to join the hackathon.
+              </p>
+              <Button
+                variant="primary"
+                icon={CheckCircle}
+                onClick={() => navigate(`/hackathons/${hackathon._id}/approvals`)}
+                className="bg-yellow-600 hover:bg-yellow-700"
+              >
+                Review Team Submissions
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Registration Timeline */}
       <div className="bg-white border-2 border-gray-200 rounded-3xl p-8">
         <h3 className="text-xl font-bold text-gray-900 mb-4">Registration Status</h3>
@@ -1007,6 +1072,32 @@ function RegistrationsTab({ hackathon, teams }) {
           </div>
         </div>
       </div>
+
+      {/* Quick Actions */}
+      {isOrganizer && (
+        <div className="bg-white border-2 border-gray-200 rounded-3xl p-8">
+          <h3 className="text-xl font-bold text-gray-900 mb-4">Quick Actions</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Button
+              variant="outline"
+              icon={CheckCircle}
+              onClick={() => navigate(`/hackathons/${hackathon._id}/approvals`)}
+            >
+              Manage Team Approvals
+            </Button>
+            <Button
+              variant="outline"
+              icon={Download}
+              onClick={() => {
+                window.open(`${import.meta.env.VITE_API_URL}/teams/hackathon/${hackathon._id}/export`, '_blank');
+                toast.success('Downloading teams data...');
+              }}
+            >
+              Export Teams CSV
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
